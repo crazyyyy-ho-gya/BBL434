@@ -1,1 +1,39 @@
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+
+def generate_universal_plasmid(insert_fasta, design_file, library_fasta, output_fasta):
+    # Load insert gene (single sequence)
+    insert_record = next(SeqIO.parse(insert_fasta, "fasta"))
+
+    # Load reusable biological parts library
+    parts_library = SeqIO.to_dict(SeqIO.parse(library_fasta, "fasta"))
+
+    plasmid_seq = Seq("")
+
+    # Parse Design.txt (one component per line)
+    with open(design_file) as f:
+        for line in f:
+            component = line.strip()
+            if not component or component.startswith("*"):
+                continue
+
+            if component == insert_record.id:
+                plasmid_seq += insert_record.seq
+            elif component in parts_library:
+                plasmid_seq += parts_library[component].seq
+            else:
+                raise ValueError(
+                    f"Component '{component}' not found in library or insert file"
+                )
+
+    # Write final plasmid
+    plasmid_record = SeqRecord(
+        plasmid_seq,
+        id="Universal_BHR_Plasmid",
+        description="Automatically assembled using component-name-based retrieval"
+    )
+
+    SeqIO.write(plasmid_record, output_fasta, "fasta")
+    print(f"Plasmid successfully generated: {output_fasta}")
 
