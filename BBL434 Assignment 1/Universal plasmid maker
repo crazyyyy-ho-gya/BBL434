@@ -1,39 +1,58 @@
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
+import sys
 
-def generate_universal_plasmid(insert_fasta, design_file, library_fasta, output_fasta):
-    # Load insert gene (single sequence)
-    insert_record = next(SeqIO.parse(insert_fasta, "fasta"))
+def generate_universal_plasmid(input_fasta, design_file, output_fasta):
+    """
+    Time-efficient assembly of a Broad Host Range plasmid
+    using a modular sequence library.
+    """
 
-    # Load reusable biological parts library
-    parts_library = SeqIO.to_dict(SeqIO.parse(library_fasta, "fasta"))
+    # 1. Load all DNA parts into a dictionary (O(N))
+    parts_library = SeqIO.to_dict(SeqIO.parse(input_fasta, "fasta"))
 
-    plasmid_seq = Seq("")
+    # 2. Essential Broad Host Range replication genes
+    essential_backbone = ["oriV", "repA", "repB", "repC"]
 
-    # Parse Design.txt (one component per line)
-    with open(design_file) as f:
+    # Use list for efficient concatenation
+    plasmid_parts = []
+
+    # Add replication backbone (O(1) lookups)
+    for gene in essential_backbone:
+        if gene not in parts_library:
+            raise ValueError(
+                f"Essential replication gene '{gene}' missing in {input_fasta}"
+            )
+        plasmid_parts.append(parts_library[gene].seq)
+
+    # 3. Parse Design.txt once (O(M))
+    with open(design_file, "r") as f:
         for line in f:
-            component = line.strip()
-            if not component or component.startswith("*"):
+            line = line.strip()
+
+            if not line or line.startswith("*"):
                 continue
 
-            if component == insert_record.id:
-                plasmid_seq += insert_record.seq
-            elif component in parts_library:
-                plasmid_seq += parts_library[component].seq
-            else:
+            component_name = line.split(",")[0].strip()
+
+            if component_name not in parts_library:
                 raise ValueError(
-                    f"Component '{component}' not found in library or insert file"
+                    f"Component '{component_name}' specified in Design.txt "
+                    f"but not found in {input_fasta}"
                 )
 
-    # Write final plasmid
+            plasmid_parts.append(parts_library[component_name].seq)
+
+    # 4. Single efficient join (O(L))
+    plasmid_seq = Seq("").join(plasmid_parts)
+
+    # 5. Write output
     plasmid_record = SeqRecord(
         plasmid_seq,
         id="Universal_BHR_Plasmid",
-        description="Automatically assembled using component-name-based retrieval"
+        description="Broad host range plasmid assembled using repABC + oriV backbone"
     )
 
     SeqIO.write(plasmid_record, output_fasta, "fasta")
     print(f"Plasmid successfully generated: {output_fasta}")
-
