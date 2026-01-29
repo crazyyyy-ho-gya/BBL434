@@ -1,58 +1,163 @@
+#!/usr/bin/env python3
+"""
+Universal Plasmid Constructor
+
+Constructs a host-compatible plasmid from an arbitrary DNA sequence by:
+1. Detecting the origin of replication (ORI) using GC-skew analysis
+2. Applying design constraints (restriction-site deletion)
+3. Ensuring required genetic markers are present
+"""
+
+import sys
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-import sys
 
-def generate_universal_plasmid(input_fasta, design_file, output_fasta):
+
+# --------------------------------------------------
+# Restriction enzyme recognition site database
+# --------------------------------------------------
+RESTRICTION_SITES = {
+    "EcoRI": "GAATTC",
+    "BamHI": "GGATCC",
+    "HindIII": "AAGCTT",
+    "NotI": "GCGGCCGC",
+    "PstI": "CTGCAG",
+    "XbaI": "TCTAGA",
+    "KpnI": "GGTACC",
+    "SalI": "GTCGAC",
+    "SmaI": "CCCGGG"
+}
+
+
+# --------------------------------------------------
+# Load genome sequence
+# --------------------------------------------------
+def load_sequence(fasta_file: str) -> Seq:
+    """Load a single-sequence FASTA file."""
+    return SeqIO.read(fasta_file, "fasta").seq.upper()
+
+
+# --------------------------------------------------
+# Load marker library
+# --------------------------------------------------
+def load_markers(marker_file: str) -> dict:
     """
-    Time-efficient assembly of a Broad Host Range plasmid
-    using a modular sequence library.
+    Load genetic markers from a tab-delimited file.
+
+    Format:
+    MarkerName<TAB>DNA_SEQUENCE
     """
-
-    # 1. Load all DNA parts into a dictionary (O(N))
-    parts_library = SeqIO.to_dict(SeqIO.parse(input_fasta, "fasta"))
-
-    # 2. Essential Broad Host Range replication genes
-    essential_backbone = ["oriV", "repA", "repB", "repC"]
-
-    # Use list for efficient concatenation
-    plasmid_parts = []
-
-    # Add replication backbone (O(1) lookups)
-    for gene in essential_backbone:
-        if gene not in parts_library:
-            raise ValueError(
-                f"Essential replication gene '{gene}' missing in {input_fasta}"
-            )
-        plasmid_parts.append(parts_library[gene].seq)
-
-    # 3. Parse Design.txt once (O(M))
-    with open(design_file, "r") as f:
+    markers = {}
+    with open(marker_file) as f:
         for line in f:
-            line = line.strip()
+            if line.strip():
+                name, seq = line.strip().split("\t")
+                markers[name] = seq.upper()
+    return markers
 
-            if not line or line.startswith("*"):
-                continue
 
-            component_name = line.split(",")[0].strip()
+# --------------------------------------------------
+# ORI detection via GC skew (O(n))
+# --------------------------------------------------
+def detect_ori(sequence: Seq, window: int = 1000, step: int = 200) -> Seq:
+    """
+    Detect origin of replication using minimum GC skew.
+    """
+    seq = str(sequence)
+    min_skew = float("inf")
+    ori_pos = 0
 
-            if component_name not in parts_library:
-                raise ValueError(
-                    f"Component '{component_name}' specified in Design.txt "
-                    f"but not found in {input_fasta}"
-                )
+    for i in range(0, len(seq) - window, step):
+        window_seq = seq[i:i + window]
+        g = window_seq.count("G")
+        c = window_seq.count("C")
 
-            plasmid_parts.append(parts_library[component_name].seq)
+        if g + c == 0:
+            continue
 
-    # 4. Single efficient join (O(L))
-    plasmid_seq = Seq("").join(plasmid_parts)
+        skew = (g - c) / (g + c)
+        if skew < min_skew:
+            min_skew = skew
+            ori_pos = i
 
-    # 5. Write output
-    plasmid_record = SeqRecord(
-        plasmid_seq,
-        id="Universal_BHR_Plasmid",
-        description="Broad host range plasmid assembled using repABC + oriV backbone"
+    return sequence[ori_pos:ori_pos + window]
+
+
+# --------------------------------------------------
+# Parse design file
+# --------------------------------------------------
+def parse_design(design_file: str):
+    """
+    Extract restriction enzymes to delete and required features.
+    """
+    enzymes = []
+    features = []
+
+    with open(design_file) as f:
+        for line in f:
+            if line.strip():
+                _, value = [x.strip() for x in line.split(",")]
+                if value in RESTRICTION_SITES:
+                    enzymes.append(value)
+                else:
+                    features.append(value)
+
+    return enzymes, features
+
+
+# --------------------------------------------------
+# Core plasmid construction
+# --------------------------------------------------
+def construct_plasmid(genome: Seq, design_file: str, marker_file: str) -> Seq:
+    """
+    Construct plasmid sequence following design constraints.
+    """
+    ori = detect_ori(genome)
+    enzymes, features = parse_design(design_file)
+    markers = load_markers(marker_file)
+
+    genome_str = str(genome)
+
+    # Remove restriction sites (O(n))
+    for enzyme in enzymes:
+        genome_str = genome_str.replace(RESTRICTION_SITES[enzyme], "")
+
+    # Append missing markers
+    additions = ""
+    for feature in features:
+        if feature in markers and markers[feature] not in genome_str:
+            additions += markers[feature]
+
+    return Seq(str(ori) + genome_str + additions)
+
+
+# --------------------------------------------------
+# Entry point
+# --------------------------------------------------
+def main():
+    if len(sys.argv) != 5:
+        print(
+            "Usage:\n"
+            "python universal_plasmid_constructor.py "
+            "Input.fa Design.txt markers.tab Output.fa"
+        )
+        sys.exit(1)
+
+    input_fa, design_txt, marker_tab, output_fa = sys.argv[1:]
+
+    genome = load_sequence(input_fa)
+    plasmid = construct_plasmid(genome, design_txt, marker_tab)
+
+    record = SeqRecord(
+        plasmid,
+        id="Universal_Plasmid",
+        description="Automatically constructed host-compatible plasmid"
     )
 
-    SeqIO.write(plasmid_record, output_fasta, "fasta")
-    print(f"Plasmid successfully generated: {output_fasta}")
+    SeqIO.write(record, output_fa, "fasta")
+    print("✅ Plasmid construction successful")
+
+
+if __name__ == "__main__":
+    main()
