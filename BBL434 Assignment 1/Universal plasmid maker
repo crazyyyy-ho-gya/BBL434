@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Universal Plasmid Constructor
+Universal Plasmid Maker
 
 Constructs a host-compatible plasmid from an arbitrary DNA sequence by:
-1. Detecting the origin of replication (ORI) using GC-skew analysis
-2. Applying design constraints (restriction-site deletion)
-3. Ensuring required genetic markers are present
+1. Detecting the origin of replication (ORI) using GC skew analysis
+2. Removing restriction enzyme recognition sites specified by the user
+3. Ensuring the presence of required antibiotic / functional markers
+
 """
 
 import sys
@@ -13,10 +14,9 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-
-# --------------------------------------------------
+# ==================================================
 # Restriction enzyme recognition site database
-# --------------------------------------------------
+# ==================================================
 RESTRICTION_SITES = {
     "EcoRI": "GAATTC",
     "BamHI": "GGATCC",
@@ -29,47 +29,73 @@ RESTRICTION_SITES = {
     "SmaI": "CCCGGG"
 }
 
+# ==================================================
+# Built-in canonical antibiotic resistance genes
+# (Fallback library)
+# ==================================================
+DEFAULT_MARKERS = {
+    "Ampicillin": (
+        "ATGAGTATTCAACATTTCCGTGTCGCCCTTATTCCCTTTTTGCGGCATTTTGCCT"
+        "TCCTGTTTTTGCTCACCCAGAAACGCTGGTGAAAGTAAAAGATGCTGAAGATCAG"
+    ),
+    "Kanamycin": (
+        "ATGGATTGCACGCAGGTTCTCCGGCCGCTTGGGTGGAGAGGCTATTCGGCTATGA"
+        "ACTGGGCGCGGAGAGCAGGCTGTTGGGTTGACGCGCTGCTGTTCTCGATCT"
+    ),
+    "Chloramphenicol": (
+        "ATGGAGAAAAAAATCACTGGATATACCACCGTTGATATATCCCAATGGCATCGT"
+        "AAAGAACATTTGAGGCATTTCAGTCAGTTGCTCAATGTACCTATAACCAGACCG"
+    ),
+    "Tetracycline": (
+        "ATGACCGAGTACGAACTGGCCAGATGCTGATTTATCCGATGCGCGGATGGCTG"
+    ),
+    "Spectinomycin": (
+        "ATGGATGCGATGTTGCGCTGGTTGACGAGATCCAGGCGATCGATG"
+    ),
+    "Hygromycin": (
+        "ATGAAAAAGCCTGAACTCACCGCGACGTCTGTCGAGAAGTTT"
+    ),
+    "Zeocin": (
+        "ATGGCCTCGCTGGCGCTGTTGGCGGCGGCTGCTGGAGG"
+    )
+}
 
-# --------------------------------------------------
-# Load genome sequence
-# --------------------------------------------------
-def load_sequence(fasta_file: str) -> Seq:
-    """Load a single-sequence FASTA file."""
-    return SeqIO.read(fasta_file, "fasta").seq.upper()
+# ==================================================
+# Utility functions
+# ==================================================
+def load_genome(fasta_file: str) -> str:
+    """Load genome sequence as uppercase string."""
+    return str(SeqIO.read(fasta_file, "fasta").seq).upper()
 
 
-# --------------------------------------------------
-# Load marker library
-# --------------------------------------------------
-def load_markers(marker_file: str) -> dict:
+def load_marker_library(marker_file: str) -> dict:
     """
-    Load genetic markers from a tab-delimited file.
-
-    Format:
-    MarkerName<TAB>DNA_SEQUENCE
+    Load user-supplied markers from FASTA.
+    Overrides built-in defaults if present.
     """
-    markers = {}
-    with open(marker_file) as f:
-        for line in f:
-            if line.strip():
-                name, seq = line.strip().split("\t")
-                markers[name] = seq.upper()
+    markers = DEFAULT_MARKERS.copy()
+
+    try:
+        for record in SeqIO.parse(marker_file, "fasta"):
+            markers[record.id] = str(record.seq).upper()
+    except FileNotFoundError:
+        print("[INFO] Marker file not found. Using built-in antibiotic library.")
+
     return markers
 
 
-# --------------------------------------------------
+# ==================================================
 # ORI detection via GC skew (O(n))
-# --------------------------------------------------
-def detect_ori(sequence: Seq, window: int = 1000, step: int = 200) -> Seq:
+# ==================================================
+def detect_ori(sequence: str, window: int = 1000, step: int = 200) -> str:
     """
-    Detect origin of replication using minimum GC skew.
+    Identify origin of replication using minimum GC skew.
     """
-    seq = str(sequence)
     min_skew = float("inf")
-    ori_pos = 0
+    ori_index = 0
 
-    for i in range(0, len(seq) - window, step):
-        window_seq = seq[i:i + window]
+    for i in range(0, len(sequence) - window, step):
+        window_seq = sequence[i:i + window]
         g = window_seq.count("G")
         c = window_seq.count("C")
 
@@ -79,20 +105,20 @@ def detect_ori(sequence: Seq, window: int = 1000, step: int = 200) -> Seq:
         skew = (g - c) / (g + c)
         if skew < min_skew:
             min_skew = skew
-            ori_pos = i
+            ori_index = i
 
-    return sequence[ori_pos:ori_pos + window]
+    return sequence[ori_index:ori_index + window]
 
 
-# --------------------------------------------------
-# Parse design file
-# --------------------------------------------------
-def parse_design(design_file: str):
+# ==================================================
+# Design file parsing
+# ==================================================
+def parse_design_file(design_file: str):
     """
-    Extract restriction enzymes to delete and required features.
+    Extract restriction enzymes and required markers.
     """
     enzymes = []
-    features = []
+    markers = []
 
     with open(design_file) as f:
         for line in f:
@@ -101,62 +127,73 @@ def parse_design(design_file: str):
                 if value in RESTRICTION_SITES:
                     enzymes.append(value)
                 else:
-                    features.append(value)
+                    markers.append(value)
 
-    return enzymes, features
+    return enzymes, markers
 
 
-# --------------------------------------------------
+# ==================================================
 # Core plasmid construction
-# --------------------------------------------------
-def construct_plasmid(genome: Seq, design_file: str, marker_file: str) -> Seq:
+# ==================================================
+def construct_plasmid(
+    genome: str,
+    design_file: str,
+    marker_file: str
+) -> Seq:
     """
-    Construct plasmid sequence following design constraints.
+    Assemble final plasmid sequence.
     """
     ori = detect_ori(genome)
-    enzymes, features = parse_design(design_file)
-    markers = load_markers(marker_file)
+    enzymes, required_markers = parse_design_file(design_file)
+    marker_library = load_marker_library(marker_file)
 
-    genome_str = str(genome)
-
-    # Remove restriction sites (O(n))
+    # Remove restriction sites
+    edited_genome = genome
     for enzyme in enzymes:
-        genome_str = genome_str.replace(RESTRICTION_SITES[enzyme], "")
+        edited_genome = edited_genome.replace(
+            RESTRICTION_SITES[enzyme], ""
+        )
 
     # Append missing markers
-    additions = ""
-    for feature in features:
-        if feature in markers and markers[feature] not in genome_str:
-            additions += markers[feature]
+    additions = []
+    for marker in required_markers:
+        if marker in marker_library:
+            if marker_library[marker] not in edited_genome:
+                additions.append(marker_library[marker])
+        else:
+            print(
+                f"[WARNING] Marker '{marker}' not found. "
+                "Provide it via marker.fa"
+            )
 
-    return Seq(str(ori) + genome_str + additions)
+    return Seq(ori + edited_genome + "".join(additions))
 
 
-# --------------------------------------------------
+# ==================================================
 # Entry point
-# --------------------------------------------------
+# ==================================================
 def main():
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 6:
         print(
             "Usage:\n"
-            "python universal_plasmid_constructor.py "
-            "Input.fa Design.txt markers.tab Output.fa"
+            "python universal_plasmid_maker.py "
+            "Input.fa Design.txt marker.fa Output.fa"
         )
         sys.exit(1)
 
-    input_fa, design_txt, marker_tab, output_fa = sys.argv[1:]
+    input_fa, design_txt, marker_fa, output_fa = sys.argv[1:]
 
-    genome = load_sequence(input_fa)
-    plasmid = construct_plasmid(genome, design_txt, marker_tab)
+    genome = load_genome(input_fa)
+    plasmid_seq = construct_plasmid(genome, design_txt, marker_fa)
 
     record = SeqRecord(
-        plasmid,
+        plasmid_seq,
         id="Universal_Plasmid",
-        description="Automatically constructed host-compatible plasmid"
+        description="Optimized host-compatible plasmid constructed automatically"
     )
 
     SeqIO.write(record, output_fa, "fasta")
-    print("✅ Plasmid construction successful")
+    print("✅ Plasmid successfully constructed")
 
 
 if __name__ == "__main__":
